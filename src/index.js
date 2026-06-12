@@ -7,132 +7,29 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import fs from "fs";
 import path from "path";
-import { get_encoding } from "tiktoken";
+import {
+  countTokens,
+  compressText,
+  extractRelevantLines,
+  summarizeLongOutput,
+  optimizePrompt,
+  generateClaudeignore,
+} from "./lib.js";
 
-const enc = get_encoding("cl100k_base");
+// Tool results are returned as plain text with a one-line stats footer.
+// JSON-wrapping the content would escape every newline and quote, inflating
+// the very token count this server exists to reduce.
 
-function countTokens(text) {
-  return enc.encode(text).length;
+function pct(before, after) {
+  return before > 0 ? Math.round(((before - after) / before) * 100) : 0;
 }
 
-// ─── Compression helpers ───────────────────────────────────────────────────
-
-function compressText(text) {
-  return text
-    .replace(/(?<!:)\/\/(?!.*["'`].*["'`]).*$/gm, "") // JS/TS line comments — skip :// (URLs) and lines where // is inside a string
-    .replace(/\/\*[\s\S]*?\*\//g, "")                  // block comments
-    .replace(/(^|\s)#(?!!).*$/gm, "$1")                // Python/shell comments — skip shebangs (#!)
-    .replace(/^\s*[\r\n]/gm, "")                       // blank lines
-    .replace(/[ \t]+/g, " ")                           // collapse whitespace
-    .replace(/\n{3,}/g, "\n\n")                        // max 2 consecutive newlines
-    .trim();
+function text(s) {
+  return { content: [{ type: "text", text: s }] };
 }
-
-function extractRelevantLines(content, keywords, windowSize = 30) {
-  const lines = content.split("\n");
-  if (!keywords || keywords.length === 0) return content;
-
-  const relevant = new Set();
-  lines.forEach((line, i) => {
-    const lower = line.toLowerCase();
-    if (keywords.some((kw) => lower.includes(kw.toLowerCase()))) {
-      for (let j = Math.max(0, i - windowSize); j <= Math.min(lines.length - 1, i + windowSize); j++) {
-        relevant.add(j);
-      }
-    }
-  });
-
-  if (relevant.size === 0) return content; // nothing matched, return as-is
-
-  const sorted = [...relevant].sort((a, b) => a - b);
-  const chunks = [];
-  let prev = -2;
-  let chunk = [];
-
-  for (const idx of sorted) {
-    if (idx > prev + 1) {
-      if (chunk.length) chunks.push(chunk.join("\n"));
-      chunk = [];
-    }
-    chunk.push(lines[idx]);
-    prev = idx;
-  }
-  if (chunk.length) chunks.push(chunk.join("\n"));
-
-  return chunks.join("\n\n... [snipped] ...\n\n");
-}
-
-// Patterns that indicate a line is high-priority (errors, failures, exceptions).
-const PRIORITY_LINE_RE = /\b(FAIL|FAILED|ERROR|error:|Exception|Traceback|TypeError|SyntaxError|ReferenceError|AssertionError|✗|✕|ENOENT|EACCES|npm ERR!)\b/i;
-
-function summarizeLongOutput(text, maxTokens = 400) {
-  const tokens = countTokens(text);
-  if (tokens <= maxTokens) return { summary: text, wasSummarized: false, originalTokens: tokens };
-
-  const MARKER_BUDGET = 20; // reserve tokens for the truncation marker
-  const budget = maxTokens - MARKER_BUDGET;
-
-  const lines = text.split("\n").filter(Boolean);
-
-  // Collect priority lines first (up to 20% of budget)
-  const priorityBudget = Math.floor(budget * 0.2);
-  const priorityIndices = new Set();
-  let priorityUsed = 0;
-  for (let i = 0; i < lines.length; i++) {
-    if (PRIORITY_LINE_RE.test(lines[i])) {
-      const t = countTokens(lines[i]);
-      if (priorityUsed + t <= priorityBudget) {
-        priorityIndices.add(i);
-        priorityUsed += t;
-      }
-    }
-  }
-
-  // Fill remaining budget with lines from the top, skipping already-included priority lines
-  const remainingBudget = budget - priorityUsed;
-  const topIndices = new Set();
-  let topUsed = 0;
-  for (let i = 0; i < lines.length; i++) {
-    if (priorityIndices.has(i)) continue;
-    const t = countTokens(lines[i]);
-    if (topUsed + t > remainingBudget) break;
-    topIndices.add(i);
-    topUsed += t;
-  }
-
-  // Merge and sort by original index to preserve order
-  const allIndices = [...new Set([...topIndices, ...priorityIndices])].sort((a, b) => a - b);
-  const keptTokens = topUsed + priorityUsed;
-
-  const summary =
-    allIndices.map((i) => lines[i]).join("\n") +
-    `\n\n[...truncated. Original: ${tokens} tokens → kept: ${keptTokens} tokens (${Math.round((keptTokens / tokens) * 100)}%)]`;
-
-  return { summary, wasSummarized: true, originalTokens: tokens, keptTokens };
-}
-
-function generateClaudeignore(projectPath) {
-  const always = [
-    "node_modules/", ".git/", "dist/", "build/", ".next/", "out/",
-    "coverage/", ".nyc_output/", "*.min.js", "*.min.css", "*.map",
-    "*.lock", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
-    ".env*", "*.log", "logs/", "tmp/", ".cache/", "__pycache__/",
-    "*.pyc", ".pytest_cache/", "venv/", ".venv/", "*.egg-info/",
-    ".DS_Store", "Thumbs.db",
-  ];
-
-  const extras = [];
-  if (fs.existsSync(path.join(projectPath, "public"))) extras.push("public/fonts/", "public/images/");
-  if (fs.existsSync(path.join(projectPath, "migrations"))) extras.push("migrations/*.sql");
-  if (fs.existsSync(path.join(projectPath, "fixtures"))) extras.push("fixtures/");
-
-  return [...always, ...extras].join("\n");
-}
-
-// ─── MCP Server ───────────────────────────────────────────────────────────
 
 const server = new Server(
-  { name: "token-saver", version: "1.0.0" },
+  { name: "token-saver", version: "1.1.0" },
   { capabilities: { tools: {} } }
 );
 
@@ -141,7 +38,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "compress_text",
       description:
-        "Strips comments, blank lines, and excess whitespace from code or prose before sending to Claude. Returns compressed text and token savings.",
+        "Strips comments, blank lines, and excess whitespace from code or prose before sending to Claude. String-aware: comment markers inside string literals (URLs, hashtags) are preserved. Returns compressed text with a token-savings footer.",
       inputSchema: {
         type: "object",
         properties: {
@@ -153,7 +50,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "smart_read_file",
       description:
-        "Reads a file but only returns lines relevant to given keywords (±30 line window). Drastically reduces tokens for large files.",
+        "Reads a file but only returns sections relevant to given keywords. Structure-aware: returns the complete enclosing function/class when a keyword matches inside one, otherwise a configurable line window. Drastically reduces tokens for large files.",
       inputSchema: {
         type: "object",
         properties: {
@@ -168,6 +65,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             description: "Also strip comments and whitespace (default: true)",
             default: true,
           },
+          window_size: {
+            type: "number",
+            description: "Fallback context window in lines around matches outside any function (default: 30)",
+            default: 30,
+          },
+          include_line_numbers: {
+            type: "boolean",
+            description: "Prefix each line with its line number (default: false; costs extra tokens)",
+            default: false,
+          },
         },
         required: ["file_path"],
       },
@@ -175,7 +82,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "summarize_output",
       description:
-        "Truncates/summarizes a long string (e.g. command output, logs) to fit within a token budget while preserving the most important lines.",
+        "Truncates a long string (e.g. command output, logs) to fit within a token budget. Preserves error/failure lines wherever they appear, keeps both the head and the tail, and collapses duplicate lines with a repeat count.",
       inputSchema: {
         type: "object",
         properties: {
@@ -191,7 +98,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "count_tokens",
-      description: "Counts how many tokens a piece of text uses (cl100k_base encoding).",
+      description:
+        "Counts tokens using the cl100k_base encoding. Note: this is OpenAI's encoding — Claude's tokenizer differs, so treat counts as approximations (typically within ~10-20%).",
       inputSchema: {
         type: "object",
         properties: {
@@ -203,7 +111,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "generate_claudeignore",
       description:
-        "Generates a .claudeignore file for a project path to prevent Claude Code from indexing build artifacts, dependencies, and other token-heavy junk.",
+        "Generates a .claudeignore file for a project. Covers Node, Python, Rust, Go, Java, Ruby, and PHP artifacts, and seeds additional entries from the project's existing .gitignore.",
       inputSchema: {
         type: "object",
         properties: {
@@ -223,7 +131,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "optimize_prompt",
       description:
-        "Takes a verbose prompt and rewrites it to be more concise while preserving intent. Returns the optimized prompt and token savings.",
+        "Takes a verbose prompt and rewrites it to be more concise while preserving intent. Fenced code blocks and inline code spans are passed through untouched. Rule-based — no extra API call.",
       inputSchema: {
         type: "object",
         properties: {
@@ -244,20 +152,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const compressed = compressText(original);
       const before = countTokens(original);
       const after = countTokens(compressed);
-      const saved = before - after;
-      const pct = Math.round((saved / before) * 100);
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              compressed_text: compressed,
-              stats: { before_tokens: before, after_tokens: after, saved: saved, reduction_pct: `${pct}%` },
-            }, null, 2),
-          },
-        ],
-      };
+      return text(
+        `${compressed}\n\n[token-saver] ${before} → ${after} tokens (saved ${pct(before, after)}%)`
+      );
     }
 
     if (name === "smart_read_file") {
@@ -269,44 +166,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       if (args.compress !== false) content = compressText(content);
       if (args.keywords && args.keywords.length > 0) {
-        content = extractRelevantLines(content, args.keywords);
+        content = extractRelevantLines(content, args.keywords, {
+          windowSize: args.window_size ?? 30,
+          lineNumbers: args.include_line_numbers ?? false,
+        });
       }
 
       const finalTokens = countTokens(content);
-      const saved = originalTokens - finalTokens;
-      const pct = Math.round((saved / originalTokens) * 100);
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              content,
-              stats: {
-                original_tokens: originalTokens,
-                final_tokens: finalTokens,
-                saved,
-                reduction_pct: `${pct}%`,
-                file: filePath,
-              },
-            }, null, 2),
-          },
-        ],
-      };
+      return text(
+        `${content}\n\n[token-saver] ${filePath}: ${originalTokens} → ${finalTokens} tokens (saved ${pct(originalTokens, finalTokens)}%)`
+      );
     }
 
     if (name === "summarize_output") {
       const result = summarizeLongOutput(args.text, args.max_tokens || 400);
-      return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-      };
+      // The summary already carries its own truncation marker when summarized
+      return text(result.summary);
     }
 
     if (name === "count_tokens") {
       const tokens = countTokens(args.text);
-      return {
-        content: [{ type: "text", text: JSON.stringify({ tokens, text_length: args.text.length }) }],
-      };
+      return text(
+        `${tokens} tokens (cl100k_base — approximate for Claude models), ${args.text.length} chars`
+      );
     }
 
     if (name === "generate_claudeignore") {
@@ -314,54 +196,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (args.write_file) {
         const dest = path.join(args.project_path, ".claudeignore");
         fs.writeFileSync(dest, content);
-        return {
-          content: [{ type: "text", text: `✅ Written to ${dest}\n\n${content}` }],
-        };
+        return text(`✅ Written to ${dest}\n\n${content}`);
       }
-      return {
-        content: [{ type: "text", text: content }],
-      };
+      return text(content);
     }
 
     if (name === "optimize_prompt") {
       const prompt = args.prompt;
-      const beforeTokens = countTokens(prompt);
-
-      // Rule-based lightweight optimization (no extra API call)
-      const optimized = prompt
-        .replace(/\bplease\b/gi, "")
-        .replace(/\bcould you\b/gi, "")
-        .replace(/\bI would like you to\b/gi, "")
-        .replace(/\bI want you to\b/gi, "")
-        .replace(/\bcan you\b/gi, "")
-        .replace(/\bkindly\b/gi, "")
-        .replace(/\bAs an AI language model,?\s*/gi, "")
-        .replace(/\bNote that\b/gi, "")
-        .replace(/\bIt is important to note that\b/gi, "")
-        .replace(/\bPlease note that\b/gi, "")
-        .replace(/\bIn order to\b/gi, "To")
-        .replace(/\bdue to the fact that\b/gi, "because")
-        .replace(/\bat this point in time\b/gi, "now")
-        .replace(/\bin the event that\b/gi, "if")
-        .replace(/[ \t]+/g, " ")
-        .replace(/\n{3,}/g, "\n\n")
-        .trim();
-
-      const afterTokens = countTokens(optimized);
-      const saved = beforeTokens - afterTokens;
-      const pct = Math.round((saved / beforeTokens) * 100);
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              optimized_prompt: optimized,
-              stats: { before_tokens: beforeTokens, after_tokens: afterTokens, saved, reduction_pct: `${pct}%` },
-            }, null, 2),
-          },
-        ],
-      };
+      const optimized = optimizePrompt(prompt);
+      const before = countTokens(prompt);
+      const after = countTokens(optimized);
+      return text(
+        `${optimized}\n\n[token-saver] ${before} → ${after} tokens (saved ${pct(before, after)}%)`
+      );
     }
 
     throw new Error(`Unknown tool: ${name}`);

@@ -6,12 +6,16 @@ An MCP server plugin for Claude Code that **automatically reduces token usage** 
 
 | Tool | What it does |
 |------|-------------|
-| `compress_text` | Strips comments, blank lines & whitespace from code/prose |
-| `smart_read_file` | Reads only relevant sections of a file (keyword-focused ±30 line window) |
-| `summarize_output` | Truncates long command output / logs to a token budget |
-| `count_tokens` | Counts exact token usage for any text (cl100k_base encoding) |
-| `generate_claudeignore` | Generates a `.claudeignore` to stop Claude indexing junk files |
-| `optimize_prompt` | Rewrites verbose prompts to be concise (rule-based, no extra API call) |
+| `compress_text` | Strips comments, blank lines & whitespace from code/prose. String-aware: never corrupts URLs or `#` inside string literals |
+| `smart_read_file` | Reads only relevant sections of a file. Structure-aware: returns the complete enclosing function/class around keyword matches, with a configurable fallback window |
+| `summarize_output` | Truncates long command output / logs to a token budget. Preserves error/failure lines anywhere in the output, keeps head + tail, collapses duplicate lines |
+| `count_tokens` | Counts token usage for any text (cl100k_base encoding) |
+| `generate_claudeignore` | Generates a `.claudeignore` covering Node, Python, Rust, Go, Java, Ruby & PHP artifacts, seeded from your existing `.gitignore` |
+| `optimize_prompt` | Rewrites verbose prompts to be concise. Fenced code blocks and inline code are passed through untouched |
+
+All tools return plain text with a compact stats footer — results are deliberately **not** JSON-wrapped, since JSON escaping of newlines and quotes would inflate the very token count this server exists to reduce.
+
+> **Note on token counts:** the server uses the `cl100k_base` encoding (via tiktoken), which is OpenAI's tokenizer. Claude's tokenizer differs, so all counts are approximations — typically within ~10–20% of Claude's actual usage. Relative savings percentages are unaffected.
 
 ## Benchmark results
 
@@ -19,17 +23,17 @@ Measured against real code fixtures and realistic prompt inputs. See [benchmark/
 
 | Tool | Avg token reduction | Best case |
 |------|--------------------:|----------:|
-| `compress_text` | 31% | 52% on JS with JSDoc |
-| `smart_read_file` | 38% | 71% when keyword is near EOF |
-| `summarize_output` | 75% | 84% on long build output |
-| `optimize_prompt` | 22% | 29% on heavily padded prompts |
+| `compress_text` | 35% | 53% on JS with JSDoc |
+| `smart_read_file` | 59% | 80% extracting one function from a module |
+| `summarize_output` | 76% | 84% on long build output |
+| `optimize_prompt` | 23% | 29% on heavily padded prompts |
 | `count_tokens` | accuracy tool — no reduction metric | — |
 | `generate_claudeignore` | structural correctness tool — no reduction metric | — |
 
 Run the benchmark yourself:
 
 ```bash
-node benchmark/run.js
+npm run benchmark
 ```
 
 ---
