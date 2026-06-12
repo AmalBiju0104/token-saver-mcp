@@ -12,8 +12,10 @@ import {
   compressText,
   extractRelevantLines,
   summarizeLongOutput,
+  summarizeDiff,
   optimizePrompt,
   generateClaudeignore,
+  isProbablyBinary,
 } from "./lib.js";
 
 // Tool results are returned as plain text with a one-line stats footer.
@@ -29,7 +31,7 @@ function text(s) {
 }
 
 const server = new Server(
-  { name: "token-saver", version: "1.1.0" },
+  { name: "token-saver", version: "1.2.0" },
   { capabilities: { tools: {} } }
 );
 
@@ -38,7 +40,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "compress_text",
       description:
-        "Strips comments, blank lines, and excess whitespace from code or prose before sending to Claude. String-aware: comment markers inside string literals (URLs, hashtags) are preserved. Returns compressed text with a token-savings footer.",
+        "Strips comments (//, /* */, #, <!-- -->), blank lines, and excess whitespace from code or prose before sending to Claude. String-aware: comment markers inside string literals (URLs, hashtags), CSS hex colors, and bare URLs are preserved; comments inside template-literal ${} expressions are stripped. Returns compressed text with a token-savings footer.",
       inputSchema: {
         type: "object",
         properties: {
@@ -50,7 +52,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "smart_read_file",
       description:
-        "Reads a file but only returns sections relevant to given keywords. Structure-aware: returns the complete enclosing function/class when a keyword matches inside one, otherwise a configurable line window. Drastically reduces tokens for large files.",
+        "Reads a file but only returns sections relevant to given keywords. Structure-aware across JS/TS, Python, Go, Rust, Java, and C#: returns the complete enclosing function/class/interface when a keyword matches inside one, otherwise a configurable line window. Rejects binary files. Drastically reduces tokens for large files.",
       inputSchema: {
         type: "object",
         properties: {
@@ -94,6 +96,23 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
         },
         required: ["text"],
+      },
+    },
+    {
+      name: "summarize_diff",
+      description:
+        "Compacts a unified git diff: keeps file headers (rewritten tersely), hunk headers, and added/removed lines; strips context lines, index/mode noise, and redundant +++/--- headers. Renames and binary files are annotated. Typically cuts diff tokens by 40-70%.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          diff: { type: "string", description: "Unified diff text (git diff output)" },
+          context_lines: {
+            type: "number",
+            description: "Context lines to keep around each change (default: 0)",
+            default: 0,
+          },
+        },
+        required: ["diff"],
       },
     },
     {
@@ -161,7 +180,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const filePath = args.file_path;
       if (!fs.existsSync(filePath)) throw new Error(`File not found: ${filePath}`);
 
-      let content = fs.readFileSync(filePath, "utf8");
+      const buf = fs.readFileSync(filePath);
+      if (isProbablyBinary(buf)) {
+        throw new Error(`Binary file, not text: ${filePath} (${buf.length} bytes)`);
+      }
+      let content = buf.toString("utf8");
       const originalTokens = countTokens(content);
 
       if (args.compress !== false) content = compressText(content);
@@ -182,6 +205,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const result = summarizeLongOutput(args.text, args.max_tokens || 400);
       // The summary already carries its own truncation marker when summarized
       return text(result.summary);
+    }
+
+    if (name === "summarize_diff") {
+      const result = summarizeDiff(args.diff, { contextLines: args.context_lines ?? 0 });
+      const before = countTokens(args.diff);
+      const after = countTokens(result.summary);
+      return text(
+        `${result.summary}\n\n[token-saver] ${result.files} file(s), +${result.additions}/-${result.deletions} | ${before} → ${after} tokens (saved ${pct(before, after)}%)`
+      );
     }
 
     if (name === "count_tokens") {

@@ -37,13 +37,14 @@ Real-world inputs stored in `benchmark/fixtures/`:
 | `sample.js` | `compress_text`, `smart_read_file` | ~120-line JS module with JSDoc, inline comments, and multiple named functions |
 | `sample.py` | `compress_text`, `smart_read_file` | ~160-line Python ETL pipeline with docstrings and `#` comments |
 | `npm-output.txt` | `summarize_output` | Realistic `npm install` + `webpack` + `jest` output including a test failure |
+| `sample.diff` | `summarize_diff` | Realistic multi-file git diff: two hunks in one file, a rename + edit, and a binary file |
 | `prompts.json` | `optimize_prompt` | 5 prompts: 3 verbose (with filler phrases), 1 clean technical, 1 with an inline code snippet |
 
 ---
 
-## Test cases by tool (34 total)
+## Test cases by tool (49 total)
 
-### `compress_text` (5 cases)
+### `compress_text` (9 cases)
 
 Comment stripping is implemented as a character-level state machine that tracks string/comment context, not regexes.
 
@@ -54,8 +55,12 @@ Comment stripping is implemented as a character-level state machine that tracks 
 | `minified_code_passthrough` | Already-minified input causes no token growth (≤5% tolerance for trim edge effects) |
 | `url_string_not_corrupted` | `https://` inside a string literal is preserved; only the trailing `// comment` is stripped |
 | `hash_inside_string_preserved` | `"#hashtag"` inside a string is preserved; the real `# comment` after it is stripped |
+| `css_hex_color_preserved` | `color: #fff` is not mistaken for a `#` comment (a `#` is only a comment when followed by whitespace) |
+| `bare_url_in_prose_preserved` | `https://...` outside any string survives; `://` never triggers the `//` rule |
+| `template_literal_expr_comment_stripped` | A `//` comment inside a `` `${...}` `` expression is stripped; the expression and literal survive |
+| `html_comment_stripped` | `<!-- -->` comments removed; surrounding markup intact |
 
-### `smart_read_file` (7 cases)
+### `smart_read_file` (11 cases)
 
 | Case | What it checks |
 |------|---------------|
@@ -66,6 +71,10 @@ Comment stripping is implemented as a character-level state machine that tracks 
 | `no_keywords_full_file` | Empty keyword list → full file returned |
 | `enclosing_function_extracted` | Structure-aware extraction returns one complete function and excludes its neighbors — tighter than the old ±30-line window |
 | `line_numbers_option` | `lineNumbers: true` prefixes each line with its number (opt-in; costs extra tokens) |
+| `typescript_interface_extracted` | TS `interface` recognized as an enclosing block; neighbors excluded |
+| `go_function_extracted` | Go `func` recognized as an enclosing block; neighbors excluded |
+| `rust_function_extracted` | Rust `pub fn` recognized as an enclosing block; neighbors excluded |
+| `binary_detection` | Null bytes in the first 512 bytes flag a file as binary; plain text never flagged |
 
 ### `summarize_output` (6 cases)
 
@@ -78,6 +87,16 @@ Comment stripping is implemented as a character-level state machine that tracks 
 | `duplicate_lines_collapsed` | A warning repeated 30× appears once, annotated `[×30]` |
 | `empty_string` | Empty input → no crash |
 
+### `summarize_diff` (5 cases)
+
+| Case | What it checks |
+|------|---------------|
+| `context_stripped_default` | Context lines dropped, all `+`/`-` lines preserved; >30% token reduction |
+| `headers_compacted` | `index`/`similarity`/`+++`/`---` noise dropped; file headers rewritten as `=== path`; `@@` hunk headers kept |
+| `rename_and_binary_annotated` | Renames render as `=== new/path (renamed from old/path)`; binary files as `=== path (binary)` |
+| `context_lines_option` | `context_lines: 1` keeps context adjacent to changes while still dropping distant context |
+| `stats_counted` | File, addition, and deletion counts match the fixture exactly |
+
 ### `count_tokens` (4 cases)
 
 | Case | What it checks |
@@ -87,7 +106,7 @@ Comment stripping is implemented as a character-level state machine that tracks 
 | `unicode_and_emoji` | Mixed Unicode + emoji → positive integer, no crash |
 | `linear_scaling` | 100 repetitions ≈ 10× the tokens of 10 repetitions (tolerance for BPE edge effects) |
 
-### `optimize_prompt` (7 cases)
+### `optimize_prompt` (8 cases)
 
 | Case | What it checks |
 |------|---------------|
@@ -95,9 +114,10 @@ Comment stripping is implemented as a character-level state machine that tracks 
 | `clean_prompt_minimal_change` | Technical prompt with no filler → ≤10% token reduction (no over-stripping) |
 | `code_snippet_preserved` | Code in a fenced block survives; filler in the prose around it is removed |
 | `code_fence_filler_untouched` | The word "please" inside a code fence (comment, string, identifier) is NOT stripped |
+| `expanded_filler_rules` | Newer rules: `I need you to`, `feel free to`, `basically`, `make sure to`, `thanks in advance` removed; `prior to` → `before` |
 | `punctuation_artifacts_cleaned` | Filler removal leaves no `" ,"`, double spaces, or orphan commas behind |
 
-### `generate_claudeignore` (5 cases)
+### `generate_claudeignore` (6 cases)
 
 | Case | What it checks |
 |------|---------------|
@@ -105,6 +125,7 @@ Comment stripping is implemented as a character-level state machine that tracks 
 | `project_with_fixtures_dir` | `fixtures/` entry added when that directory exists |
 | `no_duplicate_entries` | All output lines are unique |
 | `rust_project_target_ignored` | `Cargo.toml` present → `target/` added |
+| `terraform_project` | A `.tf` file present → `.terraform/` and `*.tfstate` added |
 | `gitignore_entries_seeded` | Entries from an existing `.gitignore` are included; comments and `!negations` are not |
 
 ---

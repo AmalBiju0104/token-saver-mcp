@@ -1,0 +1,44 @@
+diff --git a/src/auth/login.js b/src/auth/login.js
+index 3f9c2ab..8e21d4f 100644
+--- a/src/auth/login.js
++++ b/src/auth/login.js
+@@ -12,9 +12,12 @@ const SESSION_TTL = 60 * 60 * 24;
+ async function loginUser(email, password) {
+   const user = await db.users.findByEmail(email);
+   if (!user) {
+-    throw new Error("User not found");
++    // Do not reveal whether the account exists
++    throw new AuthError("Invalid credentials");
+   }
+   const ok = await bcrypt.compare(password, user.passwordHash);
+   if (!ok) {
+-    throw new Error("Bad password");
++    throw new AuthError("Invalid credentials");
+   }
++  await audit.log("login.success", user.id);
+   return createSession(user);
+ }
+@@ -41,6 +44,7 @@ function createSession(user) {
+   return {
+     id: crypto.randomUUID(),
+     userId: user.id,
++    createdAt: Date.now(),
+     expiresAt: Date.now() + SESSION_TTL * 1000,
+   };
+ }
+diff --git a/src/auth/session.js b/src/auth/utils/session.js
+similarity index 87%
+rename from src/auth/session.js
+rename to src/auth/utils/session.js
+index 11aa22b..33cc44d 100644
+--- a/src/auth/session.js
++++ b/src/auth/utils/session.js
+@@ -3,7 +3,7 @@ import { redis } from "../redis.js";
+
+ export async function storeSession(session) {
+-  await redis.set(`session:${session.id}`, JSON.stringify(session));
++  await redis.set(`session:${session.id}`, JSON.stringify(session), "EX", 86400);
+ }
+diff --git a/assets/logo.png b/assets/logo.png
+index aaaa111..bbbb222 100644
+Binary files a/assets/logo.png and b/assets/logo.png differ

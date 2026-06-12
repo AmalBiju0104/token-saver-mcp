@@ -22,8 +22,10 @@ import {
   compressText,
   extractRelevantLines,
   summarizeLongOutput,
+  summarizeDiff,
   optimizePrompt,
   generateClaudeignore,
+  isProbablyBinary,
 } from "../src/lib.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -122,6 +124,61 @@ function benchCompressText() {
     const after = countTokens(compressed);
     return { before, after, tokenReductionPct: reduction(before, after) };
   });
+
+  // Case 6: CSS hex colors after whitespace — must not be treated as # comments
+  run("compress_text", "css_hex_color_preserved", () => {
+    const original = `.btn { color: #fff; background: #1a2b3c; } /* theme colors */`;
+    const compressed = compressText(original);
+
+    assert(compressed.includes("#fff"), "hex color after space preserved");
+    assert(compressed.includes("#1a2b3c"), "second hex color preserved");
+    assert(!compressed.includes("theme colors"), "block comment stripped");
+
+    const before = countTokens(original);
+    const after = countTokens(compressed);
+    return { before, after, tokenReductionPct: reduction(before, after) };
+  });
+
+  // Case 7: Bare URL outside any string — :// must not trigger the // comment rule
+  run("compress_text", "bare_url_in_prose_preserved", () => {
+    const original = `Visit https://example.com/docs for setup // remove this note`;
+    const compressed = compressText(original);
+
+    assert(compressed.includes("https://example.com/docs"), "bare URL preserved");
+    assert(!compressed.includes("remove this note"), "real // comment stripped");
+
+    const before = countTokens(original);
+    const after = countTokens(compressed);
+    return { before, after, tokenReductionPct: reduction(before, after) };
+  });
+
+  // Case 8: Comments inside template-literal ${} expressions are stripped
+  run("compress_text", "template_literal_expr_comment_stripped", () => {
+    const original = "const msg = `total: ${items.length // count of items\n} done`;";
+    const compressed = compressText(original);
+
+    assert(!compressed.includes("count of items"), "comment inside ${} stripped");
+    assert(compressed.includes("items.length"), "expression code preserved");
+    assert(compressed.includes("done`"), "template literal closes correctly");
+
+    const before = countTokens(original);
+    const after = countTokens(compressed);
+    return { before, after, tokenReductionPct: reduction(before, after) };
+  });
+
+  // Case 9: HTML comments stripped, markup preserved
+  run("compress_text", "html_comment_stripped", () => {
+    const original = `<div class="header">Hello</div>\n<!-- TODO: remove this banner -->\n<span>World</span>`;
+    const compressed = compressText(original);
+
+    assert(!compressed.includes("TODO"), "HTML comment stripped");
+    assert(compressed.includes('<div class="header">Hello</div>'), "markup before comment preserved");
+    assert(compressed.includes("<span>World</span>"), "markup after comment preserved");
+
+    const before = countTokens(original);
+    const after = countTokens(compressed);
+    return { before, after, tokenReductionPct: reduction(before, after) };
+  });
 }
 
 // ── smart_read_file ───────────────────────────────────────────────────────────
@@ -215,6 +272,91 @@ function benchSmartReadFile() {
     const after = countTokens(result);
     return { before, after, tokenReductionPct: reduction(before, after), note: "line numbers cost extra tokens" };
   });
+
+  // Case 8: TypeScript interface recognized as an enclosing block
+  run("smart_read_file", "typescript_interface_extracted", () => {
+    const original = [
+      "export interface UserProfile {",
+      "  id: string;",
+      "  email: string;",
+      "  displayName: string;",
+      "}",
+      "",
+      "export function unrelatedHelper() {",
+      "  return 42;",
+      "}",
+    ].join("\n");
+    const result = extractRelevantLines(original, ["displayName"]);
+
+    assert(result.includes("interface UserProfile"), "interface definition included");
+    assert(result.includes("id: string"), "full interface body included");
+    assert(!result.includes("unrelatedHelper"), "neighboring function excluded");
+
+    const before = countTokens(original);
+    const after = countTokens(result);
+    return { before, after, tokenReductionPct: reduction(before, after), note: "tiny fixture — correctness, not savings" };
+  });
+
+  // Case 9: Go func recognized as an enclosing block
+  run("smart_read_file", "go_function_extracted", () => {
+    const original = [
+      "package main",
+      "",
+      "func fetchRecords(db *sql.DB) ([]Record, error) {",
+      '\trows, err := db.Query("SELECT * FROM records")',
+      "\tif err != nil {",
+      "\t\treturn nil, err",
+      "\t}",
+      "\treturn scanRecords(rows), nil",
+      "}",
+      "",
+      "func unrelatedThing() {",
+      '\tfmt.Println("hi")',
+      "}",
+    ].join("\n");
+    const result = extractRelevantLines(original, ["db.Query"]);
+
+    assert(result.includes("func fetchRecords"), "Go func definition included");
+    assert(result.includes("return scanRecords(rows), nil"), "full func body included");
+    assert(!result.includes("unrelatedThing"), "neighboring func excluded");
+
+    const before = countTokens(original);
+    const after = countTokens(result);
+    return { before, after, tokenReductionPct: reduction(before, after), note: "tiny fixture — correctness, not savings" };
+  });
+
+  // Case 10: Rust fn recognized as an enclosing block
+  run("smart_read_file", "rust_function_extracted", () => {
+    const original = [
+      "use std::fs;",
+      "",
+      "pub fn parse_config(input: &str) -> Result<Config, ParseError> {",
+      "    let raw: toml::Value = input.parse()?;",
+      "    Config::from_value(raw)",
+      "}",
+      "",
+      "pub fn unrelated_helper() -> u32 {",
+      "    42",
+      "}",
+    ].join("\n");
+    const result = extractRelevantLines(original, ["toml::Value"]);
+
+    assert(result.includes("pub fn parse_config"), "Rust fn definition included");
+    assert(result.includes("Config::from_value"), "full fn body included");
+    assert(!result.includes("unrelated_helper"), "neighboring fn excluded");
+
+    const before = countTokens(original);
+    const after = countTokens(result);
+    return { before, after, tokenReductionPct: reduction(before, after), note: "tiny fixture — correctness, not savings" };
+  });
+
+  // Case 11: Binary detection — null bytes flagged, plain text not
+  run("smart_read_file", "binary_detection", () => {
+    const pngLike = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01, 0x02]);
+    assert(isProbablyBinary(pngLike), "PNG-like bytes flagged as binary");
+    assert(!isProbablyBinary(Buffer.from("plain text file\nwith several lines\n")), "text not flagged");
+    return { before: 0, after: 0, tokenReductionPct: 0, note: "structural test" };
+  });
 }
 
 // ── summarize_output ──────────────────────────────────────────────────────────
@@ -296,6 +438,79 @@ function benchSummarizeOutput() {
     const result = summarizeLongOutput("", 400);
     assert(typeof result.summary === "string", "returns string");
     return { before: 0, after: 0, tokenReductionPct: 0, note: "empty input passthrough" };
+  });
+}
+
+// ── summarize_diff ────────────────────────────────────────────────────────────
+
+function benchSummarizeDiff() {
+  const diff = fs.readFileSync(path.join(FIXTURES, "sample.diff"), "utf8");
+
+  // Case 1: Context lines stripped by default — significant reduction
+  run("summarize_diff", "context_stripped_default", () => {
+    const result = summarizeDiff(diff);
+    const before = countTokens(diff);
+    const after = countTokens(result.summary);
+
+    assert(!result.summary.includes("bcrypt.compare"), "pure context line stripped");
+    assert(result.summary.includes('await audit.log("login.success", user.id)'), "added line preserved");
+    assert(result.summary.includes('throw new Error("User not found")'), "removed line preserved");
+    assert(after < before * 0.7, `expected >30% reduction, got ${reduction(before, after)}%`);
+
+    return { before, after, tokenReductionPct: reduction(before, after) };
+  });
+
+  // Case 2: Noise headers dropped, file headers rewritten tersely
+  run("summarize_diff", "headers_compacted", () => {
+    const result = summarizeDiff(diff);
+
+    assert(!result.summary.includes("index 3f9c2ab"), "index lines dropped");
+    assert(!result.summary.includes("similarity index"), "similarity lines dropped");
+    assert(!result.summary.includes("+++ "), "redundant +++ header dropped");
+    assert(result.summary.includes("=== src/auth/login.js"), "terse file header present");
+    assert(result.summary.includes("@@ -12,9 +12,12 @@"), "hunk header preserved");
+
+    const before = countTokens(diff);
+    const after = countTokens(result.summary);
+    return { before, after, tokenReductionPct: reduction(before, after) };
+  });
+
+  // Case 3: Renames and binary files annotated on the file header
+  run("summarize_diff", "rename_and_binary_annotated", () => {
+    const result = summarizeDiff(diff);
+
+    assert(
+      result.summary.includes("=== src/auth/utils/session.js (renamed from src/auth/session.js)"),
+      "rename annotated"
+    );
+    assert(result.summary.includes("=== assets/logo.png (binary)"), "binary file annotated");
+
+    const before = countTokens(diff);
+    const after = countTokens(result.summary);
+    return { before, after, tokenReductionPct: reduction(before, after) };
+  });
+
+  // Case 4: context_lines option keeps nearby context, still drops distant context
+  run("summarize_diff", "context_lines_option", () => {
+    const result = summarizeDiff(diff, { contextLines: 1 });
+
+    assert(result.summary.includes("return createSession(user);"), "adjacent context kept");
+    assert(!result.summary.includes("async function loginUser"), "distant context still dropped");
+
+    const before = countTokens(diff);
+    const after = countTokens(result.summary);
+    return { before, after, tokenReductionPct: reduction(before, after) };
+  });
+
+  // Case 5: File/addition/deletion stats counted correctly
+  run("summarize_diff", "stats_counted", () => {
+    const result = summarizeDiff(diff);
+
+    assert(result.files === 3, `expected 3 files, got ${result.files}`);
+    assert(result.additions === 6, `expected 6 additions, got ${result.additions}`);
+    assert(result.deletions === 3, `expected 3 deletions, got ${result.deletions}`);
+
+    return { before: 0, after: 0, tokenReductionPct: 0, note: "structural test" };
   });
 }
 
@@ -399,7 +614,27 @@ function benchOptimizePrompt() {
     return { before, after, tokenReductionPct: reduction(before, after) };
   });
 
-  // Case 7: No punctuation artifacts left behind after filler removal
+  // Case 7: Expanded filler rules — newer phrases removed/replaced
+  run("optimize_prompt", "expanded_filler_rules", () => {
+    const prompt =
+      "I need you to refactor this module. Feel free to rename variables. Basically, make sure to keep the tests passing prior to committing. Thanks in advance!";
+    const optimized = optimizePrompt(prompt);
+    const before = countTokens(prompt);
+    const after = countTokens(optimized);
+
+    assert(!/\bI need you to\b/i.test(optimized), "'I need you to' removed");
+    assert(!/\bfeel free to\b/i.test(optimized), "'feel free to' removed");
+    assert(!/\bbasically\b/i.test(optimized), "'basically' removed");
+    assert(!/\bmake sure to\b/i.test(optimized), "'make sure to' removed");
+    assert(!/\bthanks in advance\b/i.test(optimized), "'thanks in advance' removed");
+    assert(/\bbefore\b/.test(optimized), "'prior to' replaced with 'before'");
+    assert(optimized.includes("refactor this module"), "core instruction kept");
+    assert(after < before, "optimized prompt should be shorter");
+
+    return { before, after, tokenReductionPct: reduction(before, after) };
+  });
+
+  // Case 8: No punctuation artifacts left behind after filler removal
   run("optimize_prompt", "punctuation_artifacts_cleaned", () => {
     const prompt = "Could you please help me , thanks .";
     const optimized = optimizePrompt(prompt);
@@ -472,7 +707,18 @@ function benchGenerateClaudeignore() {
     });
   });
 
-  // Case 5: Existing .gitignore entries are seeded in (comments and negations excluded)
+  // Case 5: Terraform project — .terraform/ and state files ignored
+  run("generate_claudeignore", "terraform_project", () => {
+    return withTmpDir("tmp_tf", (dir) => fs.writeFileSync(path.join(dir, "main.tf"), 'provider "aws" {}\n'), (dir) => {
+      const content = generateClaudeignore(dir);
+      assert(content.includes(".terraform/"), ".terraform/ added for Terraform project");
+      assert(content.includes("*.tfstate"), "*.tfstate added for Terraform project");
+      const tokens = countTokens(content);
+      return { before: tokens, after: tokens, tokenReductionPct: 0, note: "structural test" };
+    });
+  });
+
+  // Case 6: Existing .gitignore entries are seeded in (comments and negations excluded)
   run("generate_claudeignore", "gitignore_entries_seeded", () => {
     return withTmpDir(
       "tmp_gitignore",
@@ -495,6 +741,7 @@ function benchGenerateClaudeignore() {
 benchCompressText();
 benchSmartReadFile();
 benchSummarizeOutput();
+benchSummarizeDiff();
 benchCountTokens();
 benchOptimizePrompt();
 benchGenerateClaudeignore();
