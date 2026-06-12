@@ -1,0 +1,92 @@
+npm warn deprecated inflight@1.0.6: not supported, leaks memory
+npm warn deprecated rimraf@2.7.1: versions prior to v4 not supported
+npm warn deprecated glob@7.2.3: versions prior to v9 not supported
+
+added 247 packages, and audited 248 packages in 34s
+
+38 packages are looking for funding
+  run `npm fund` for details
+
+found 0 vulnerabilities
+npm warn config global `--global`, `--local` are deprecated. Use `--location=global` instead.
+
+> my-app@1.0.0 build
+> webpack --config webpack.config.js
+
+asset main.js 2.34 MiB [emitted] [minimized] (name: main) 1 related asset
+asset vendors~main.js 1.12 MiB [emitted] [minimized] (name: vendors~main) 1 related asset
+asset index.html 512 bytes [compared for emit]
+orphan modules 3.45 KiB [orphan] 42 modules
+runtime modules 2.12 KiB 9 modules
+cacheable modules 4.23 MiB
+  modules by path ./node_modules/ 4.12 MiB
+    modules by path ./node_modules/react/ 128 KiB
+      ./node_modules/react/index.js 190 bytes [built] [code generated]
+      ./node_modules/react/cjs/react.development.js 72.1 KiB [built] [code generated]
+      ./node_modules/react/cjs/react.production.min.js 6.94 KiB [built] [code generated]
+      + 3 modules
+    modules by path ./node_modules/react-dom/ 1.04 MiB
+      ./node_modules/react-dom/index.js 1.33 KiB [built] [code generated]
+      ./node_modules/react-dom/cjs/react-dom.development.js 965 KiB [built] [code generated]
+      ./node_modules/react-dom/cjs/react-dom.production.min.js 121 KiB [built] [code generated]
+      + 2 modules
+    modules by path ./node_modules/lodash/ 531 KiB 642 modules [built] [code generated]
+    modules by path ./node_modules/moment/ 288 KiB
+      ./node_modules/moment/moment.js 174 KiB [built] [code generated]
+      ./node_modules/moment/locale/ 113 KiB 94 modules [built] [code generated]
+    modules by path ./node_modules/axios/ 55.6 KiB 7 modules [built] [code generated]
+    modules by path ./node_modules/redux/ 32.1 KiB 5 modules [built] [code generated]
+    modules by path ./node_modules/react-redux/ 88.4 KiB 8 modules [built] [code generated]
+    modules by path ./node_modules/styled-components/ 342 KiB 39 modules [built] [code generated]
+  modules by path ./src/ 112 KiB
+    ./src/index.js 1.23 KiB [built] [code generated]
+    ./src/App.js 4.56 KiB [built] [code generated]
+    ./src/components/ 48.3 KiB 24 modules [built] [code generated]
+    ./src/store/ 18.9 KiB 11 modules [built] [code generated]
+    ./src/utils/ 8.12 KiB 6 modules [built] [code generated]
+    ./src/hooks/ 12.4 KiB 8 modules [built] [code generated]
+    ./src/api/ 19.1 KiB 9 modules [built] [code generated]
+
+webpack 5.89.0 compiled successfully in 42341 ms
+
+> my-app@1.0.0 test
+> jest --coverage
+
+ PASS  src/components/Button.test.js
+ PASS  src/components/Modal.test.js
+ PASS  src/utils/formatters.test.js
+ PASS  src/hooks/useAuth.test.js
+ FAIL  src/api/users.test.js
+  ● UserAPI › createUser › should return 201 on success
+
+    expect(received).toBe(expected)
+
+    Expected: 201
+    Received: 400
+
+      23 |   it('should return 201 on success', async () => {
+      24 |     const res = await api.post('/users').send({ email: 'test@test.com', password: 'secret' });
+    > 25 |     expect(res.status).toBe(201);
+         |                        ^
+      26 |   });
+      27 | });
+
+      at Object.<anonymous> (src/api/users.test.js:25:24)
+
+ PASS  src/store/authSlice.test.js
+ PASS  src/store/userSlice.test.js
+
+----------|---------|----------|---------|---------|-------------------
+File      | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s
+----------|---------|----------|---------|---------|-------------------
+All files |   78.34 |    65.21 |   82.14 |   79.01 |
+ src/     |   91.23 |    78.45 |   93.10 |   91.67 |
+  App.js  |   88.12 |    72.34 |   90.00 |   88.89 | 45,67,89
+ src/api/ |   71.34 |    58.92 |   75.00 |   72.14 |
+  users.js|   71.34 |    58.92 |   75.00 |   72.14 | 34,56,78,90-95
+----------|---------|----------|---------|---------|-------------------
+
+Test Suites: 1 failed, 6 passed, 7 total
+Tests:       1 failed, 43 passed, 44 total
+Snapshots:   0 total
+Time:        18.234 s

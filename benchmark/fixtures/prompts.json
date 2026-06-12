@@ -1,0 +1,27 @@
+[
+  {
+    "id": "verbose_1",
+    "text": "Please could you kindly help me understand how I would go about refactoring this function? I would like you to explain it in a way that is easy to understand. It is important to note that I am not very familiar with async/await patterns in JavaScript.",
+    "expected_intent": "Explain how to refactor a function, noting unfamiliarity with async/await"
+  },
+  {
+    "id": "verbose_2",
+    "text": "Can you please take a look at this code and let me know if there are any bugs? I want you to be thorough. Please note that this code runs in production. In order to make your review more useful, please also note that performance is a concern due to the fact that we have a large number of users.",
+    "expected_intent": "Review code for bugs; production context; performance matters due to scale"
+  },
+  {
+    "id": "verbose_3",
+    "text": "As an AI language model, I understand you have limitations, but could you please help me write a SQL query that in the event that the users table has more than 1000 rows, returns the top 10 users by created_at date? Kindly make it efficient.",
+    "expected_intent": "Write an efficient SQL query returning top 10 users by created_at when table has >1000 rows"
+  },
+  {
+    "id": "technical_clean",
+    "text": "Write a TypeScript generic that constrains T to objects with a numeric `id` field, then maps an array of T to a Record<number, T>.",
+    "expected_intent": "Write a TypeScript generic mapping array to Record by numeric id"
+  },
+  {
+    "id": "code_snippet",
+    "text": "please note that this returns undefined:\n```js\nconst x = async () => { return fetch('/api').then(r => r.json()) }\nconsole.log(x())\n```\ncan you tell me why?",
+    "expected_intent": "Explain why logging the result of an async function prints a Promise, not the value"
+  }
+]

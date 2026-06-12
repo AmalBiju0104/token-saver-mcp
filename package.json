@@ -1,0 +1,17 @@
+{
+  "name": "token-saver-mcp",
+  "version": "1.0.0",
+  "description": "MCP server that automatically reduces Claude token usage",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "token-saver-mcp": "./src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "tiktoken": "^1.0.21"
+  }
+}
